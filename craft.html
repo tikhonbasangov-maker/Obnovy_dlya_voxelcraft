@@ -1,0 +1,1570 @@
+<!DOCTYPE html>
+<!--
+  CRAFT — самодельный "Minecraft" в одном HTML-файле.
+
+  ЗАМЕТКА ДЛЯ УПАКОВКИ В APK:
+  Страница пытается сама заблокировать альбомную ориентацию через
+  screen.orientation.lock('landscape') и вставляет Web App Manifest
+  с "orientation": "landscape" (см. <link id="webAppManifest">).
+  Однако если оборачивать страницу в APK через WebView-обёртку
+  (Cordova/Capacitor/старый WebViewGold и т.п.), финальное слово
+  остаётся за нативным приложением: в AndroidManifest.xml у Activity
+  нужно поставить android:screenOrientation="unspecified" или
+  "sensor" (НЕ "portrait"), иначе поворот будет заблокирован на
+  уровне приложения независимо от кода страницы. Если использовать
+  Trusted Web Activity (PWABuilder/Bubblewrap) — она обычно уважает
+  "orientation" из манифеста, и ориентация "landscape" сработает
+  «из коробки».
+-->
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="screen-orientation" content="landscape">
+<link rel="manifest" id="webAppManifest">
+<title>Craft — самодельный Minecraft на HTML</title>
+<style>
+  /* ============================================================
+     БАЗОВЫЕ СТИЛИ
+     ============================================================ */
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden; background: #000;
+    font-family: "Segoe UI", Verdana, Arial, sans-serif;
+    touch-action: none;
+  }
+  canvas { display: block; outline: none; }
+
+  #gameContainer {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    display: none;
+  }
+
+  /* ============================================================
+     ГЛАВНОЕ МЕНЮ
+     ============================================================ */
+  #menuScreen {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: linear-gradient(180deg, #274c7a 0%, #1a2f4d 60%, #0d1626 100%);
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+    overflow-y: auto; color: #fff; z-index: 100;
+    padding: env(safe-area-inset-top, 20px) 16px calc(env(safe-area-inset-bottom, 20px) + 20px) 16px;
+  }
+  #menuScreen h1 {
+    font-size: 42px; margin: 30px 0 4px 0; letter-spacing: 2px;
+    text-shadow: 3px 3px 0 #4a3418, -2px -2px 0 #000;
+    color: #7ed957;
+  }
+  #menuScreen h1 span { color: #d9c257; }
+  .menuSubtitle { opacity: 0.7; margin-bottom: 24px; font-size: 13px; }
+
+  .panel {
+    background: rgba(20, 20, 30, 0.72);
+    border: 2px solid rgba(255,255,255,0.15);
+    border-radius: 10px;
+    padding: 18px 20px;
+    width: 100%;
+    max-width: 420px;
+    margin-bottom: 18px;
+  }
+  .panel h2 {
+    margin: 0 0 12px 0; font-size: 16px; text-transform: uppercase;
+    letter-spacing: 1px; color: #9fd6ff; border-bottom: 1px solid rgba(255,255,255,0.15);
+    padding-bottom: 8px;
+  }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 12px; opacity: 0.75; margin-bottom: 5px; }
+  .field input[type="text"], .field input[type="number"] {
+    width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #555;
+    background: #12161f; color: #fff; font-size: 15px;
+  }
+  .rowFlex { display: flex; gap: 8px; }
+  .rowFlex > * { flex: 1; }
+
+  button {
+    cursor: pointer; border: none; border-radius: 6px; font-weight: 600;
+    font-size: 14px; padding: 11px 14px; transition: transform 0.05s, filter 0.15s;
+  }
+  button:active { transform: scale(0.96); filter: brightness(0.9); }
+  .btnPrimary { background: linear-gradient(180deg, #7ed957, #4caf35); color: #10310a; width: 100%; }
+  .btnSecondary { background: #3a4457; color: #fff; }
+  .btnDanger { background: #a33a3a; color: #fff; }
+  .btnSmall { padding: 7px 10px; font-size: 12px; }
+  .btnGhost { background: transparent; border: 1px solid rgba(255,255,255,0.3); color: #fff; }
+
+  #worldsList { max-height: 220px; overflow-y: auto; }
+  .worldRow {
+    display: flex; align-items: center; justify-content: space-between;
+    background: rgba(255,255,255,0.06); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px;
+  }
+  .worldRow .info { display: flex; flex-direction: column; }
+  .worldRow .info b { font-size: 14px; }
+  .worldRow .info span { font-size: 11px; opacity: 0.6; }
+  .worldRow .actions { display: flex; gap: 6px; }
+  #emptyWorldsMsg { opacity: 0.5; font-size: 13px; text-align: center; padding: 10px 0; }
+
+  /* ============================================================
+     HUD В ИГРЕ
+     ============================================================ */
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 20; }
+  #crosshair {
+    position: absolute; top: 50%; left: 50%; width: 22px; height: 22px;
+    transform: translate(-50%, -50%);
+  }
+  #crosshair::before, #crosshair::after {
+    content: ""; position: absolute; background: rgba(255,255,255,0.85);
+    box-shadow: 0 0 2px rgba(0,0,0,0.8);
+  }
+  #crosshair::before { left: 50%; top: 0; width: 2px; height: 100%; margin-left: -1px; }
+  #crosshair::after { top: 50%; left: 0; height: 2px; width: 100%; margin-top: -1px; }
+
+  #hotbar {
+    position: absolute; bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+    left: 50%; transform: translateX(-50%);
+    display: flex; gap: 4px; pointer-events: auto;
+    background: rgba(0,0,0,0.25); padding: 5px; border-radius: 8px;
+  }
+  .hotSlot {
+    width: 46px; height: 46px; border-radius: 5px;
+    border: 2px solid rgba(255,255,255,0.35);
+    display: flex; align-items: center; justify-content: center;
+    position: relative; cursor: pointer;
+    background-color: #333; background-size: cover; image-rendering: pixelated;
+  }
+  .hotSlot.selected { border-color: #fff; box-shadow: 0 0 8px rgba(255,255,255,0.8); }
+  .hotSlot .num { position: absolute; top: 1px; left: 3px; font-size: 9px; color: #fff; text-shadow: 0 0 2px #000; opacity: 0.85; }
+
+  #topBar {
+    position: absolute; top: env(safe-area-inset-top, 8px); left: 8px; right: 8px;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    pointer-events: none;
+  }
+  #worldLabel {
+    background: rgba(0,0,0,0.35); color: #fff; padding: 5px 10px; border-radius: 6px;
+    font-size: 12px; pointer-events: auto;
+  }
+  #menuBtn {
+    pointer-events: auto; background: rgba(0,0,0,0.4); color: #fff; border-radius: 6px;
+    padding: 7px 12px; font-size: 12px;
+  }
+  #hint {
+    position: absolute; top: 46px; left: 8px; right: 8px; text-align: center;
+    color: #fff; font-size: 12px; background: rgba(0,0,0,0.3); padding: 6px 10px;
+    border-radius: 6px; max-width: 420px; margin: 0 auto; pointer-events: none;
+    transition: opacity 1s;
+  }
+
+  /* ============================================================
+     МОБИЛЬНОЕ УПРАВЛЕНИЕ
+     ============================================================ */
+  #touchControls { position: absolute; inset: 0; pointer-events: none; display: none; }
+  #joyZone {
+    position: absolute; left: 18px; bottom: calc(env(safe-area-inset-bottom, 0px) + 90px);
+    width: 130px; height: 130px; border-radius: 50%;
+    background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.25);
+    pointer-events: auto;
+  }
+  #joyStick {
+    position: absolute; width: 56px; height: 56px; border-radius: 50%;
+    background: rgba(255,255,255,0.55); left: 37px; top: 37px;
+  }
+  #lookZone {
+    position: absolute; right: 0; top: 0; bottom: 0; width: 62%;
+    pointer-events: auto;
+  }
+  .actBtn {
+    position: absolute; pointer-events: auto; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; color: #fff; background: rgba(0,0,0,0.35);
+    border: 2px solid rgba(255,255,255,0.3);
+  }
+  #btnBreak { width: 66px; height: 66px; right: 90px; bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); background: rgba(180,60,60,0.55); }
+  #btnPlace { width: 66px; height: 66px; right: 14px; bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); background: rgba(60,140,60,0.55); }
+  #btnJump  { width: 74px; height: 74px; right: 52px; bottom: calc(env(safe-area-inset-bottom, 0px) + 90px); background: rgba(60,100,180,0.55); }
+
+  /* ============================================================
+     ПАУЗА
+     ============================================================ */
+  #pauseScreen {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 30;
+    display: none; align-items: center; justify-content: center; flex-direction: column;
+  }
+  #pauseScreen .panel { text-align: center; }
+
+  #loadingScreen {
+    position: fixed; inset: 0; background: #10182a; z-index: 200;
+    display: none; align-items: center; justify-content: center; color: #fff;
+    flex-direction: column; font-size: 15px;
+  }
+  .spinner {
+    width: 36px; height: 36px; border: 4px solid rgba(255,255,255,0.25);
+    border-top-color: #7ed957; border-radius: 50%; margin-bottom: 14px;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ============================================================
+     ПОДСКАЗКА "ПОВЕРНИТЕ ТЕЛЕФОН"
+     ============================================================ */
+  #rotatePrompt {
+    position: fixed; inset: 0; background: rgba(10, 14, 24, 0.92); z-index: 150;
+    display: none; align-items: center; justify-content: center; flex-direction: column;
+    color: #fff; text-align: center; padding: 24px; pointer-events: auto;
+  }
+  #rotateIcon { font-size: 54px; margin-bottom: 14px; animation: rotateHint 1.6s ease-in-out infinite; }
+  @keyframes rotateHint {
+    0%, 100% { transform: rotate(0deg); }
+    50% { transform: rotate(90deg); }
+  }
+  #rotatePrompt p { max-width: 320px; font-size: 14px; opacity: 0.85; margin: 0 0 16px 0; }
+
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.25); border-radius: 4px; }
+</style>
+</head>
+<body>
+
+  <!-- ================= ГЛАВНОЕ МЕНЮ ================= -->
+  <div id="menuScreen">
+    <h1><span>Craft</span></h1>
+    <div class="menuSubtitle">самодельная копия Minecraft — один HTML-файл, работает на компьютере и телефоне</div>
+
+    <div class="panel">
+      <h2>Создать новый мир</h2>
+      <div class="field">
+        <label>Название мира</label>
+        <input type="text" id="newWorldName" placeholder="Мой мир" maxlength="24">
+      </div>
+      <div class="field">
+        <label>Сид (число, определяет ландшафт)</label>
+        <div class="rowFlex">
+          <input type="number" id="newWorldSeed" placeholder="Случайный">
+          <button class="btnSecondary btnSmall" id="randSeedBtn" style="flex:0 0 90px;">Случайно</button>
+        </div>
+      </div>
+      <button class="btnPrimary" id="createWorldBtn">Создать и играть</button>
+    </div>
+
+    <div class="panel">
+      <h2>Сохранённые миры</h2>
+      <div id="worldsList"></div>
+      <div id="emptyWorldsMsg">Пока нет сохранённых миров</div>
+    </div>
+
+    <div class="panel" style="text-align:center; font-size:12px; opacity:0.65;">
+      Управление: ПК — WASD + мышь, клик по экрану для захвата курсора, ЛКМ ломать, ПКМ ставить блок.<br>
+      Телефон — джойстик слева, палец справа для взгляда, кнопки для прыжка/ломания/установки.<br>
+      Игра поддерживает альбомную (горизонтальную) ориентацию и при запуске на телефоне
+      попробует сама повернуться и развернуться на весь экран.
+    </div>
+  </div>
+
+  <!-- ================= ЭКРАН ЗАГРУЗКИ ================= -->
+  <div id="loadingScreen">
+    <div class="spinner"></div>
+    <div id="loadingText">Генерация мира...</div>
+  </div>
+
+  <!-- ================= ПОДСКАЗКА ПОВОРОТА ================= -->
+  <div id="rotatePrompt">
+    <div id="rotateIcon">🔄</div>
+    <p>Поверните телефон горизонтально — так удобнее играть и видно больше мира.</p>
+    <button class="btnSecondary btnSmall" id="rotateDismissBtn">Играть в текущей ориентации</button>
+  </div>
+
+  <!-- ================= ИГРА ================= -->
+  <div id="gameContainer">
+    <div id="hud">
+      <div id="crosshair"></div>
+      <div id="topBar">
+        <div id="worldLabel">Мир</div>
+        <button id="menuBtn">☰ Меню</button>
+      </div>
+      <div id="hint"></div>
+      <div id="hotbar"></div>
+    </div>
+
+    <div id="touchControls">
+      <div id="joyZone"><div id="joyStick"></div></div>
+      <div id="lookZone"></div>
+      <div class="actBtn" id="btnBreak">⛏</div>
+      <div class="actBtn" id="btnPlace">▦</div>
+      <div class="actBtn" id="btnJump">⤒</div>
+    </div>
+  </div>
+
+  <!-- ================= ПАУЗА ================= -->
+  <div id="pauseScreen">
+    <div class="panel">
+      <h2>Пауза</h2>
+      <div class="field"><button class="btnPrimary" id="resumeBtn">Продолжить</button></div>
+      <div class="field"><button class="btnSecondary" id="saveNowBtn">Сохранить мир</button></div>
+      <div class="field"><button class="btnDanger" id="quitBtn">Выйти в меню</button></div>
+    </div>
+  </div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* =====================================================================
+   CRAFT — самодельный воксельный "Minecraft" на чистом Three.js
+   Один файл: генерация мира, процедурные текстуры, физика игрока,
+   управление мышью/клавиатурой и сенсорным экраном, сохранение миров
+   в localStorage, попытка альбомной ориентации / полноэкранного режима.
+   ===================================================================== */
+
+/* ---------------------------------------------------------------------
+   1. КОНСТАНТЫ МИРА И ТИПЫ БЛОКОВ
+   --------------------------------------------------------------------- */
+const WORLD_W = 48;      // размер мира по X (в блоках)
+const WORLD_D = 48;      // размер мира по Z
+const WORLD_H = 30;      // высота мира по Y
+const CHUNK_SIZE = 12;   // размер одного чанка (WORLD_W и WORLD_D должны делиться на него)
+const CHUNKS_X = WORLD_W / CHUNK_SIZE;
+const CHUNKS_Z = WORLD_D / CHUNK_SIZE;
+const WATER_LEVEL = 9;
+
+const AIR = 0, GRASS = 1, DIRT = 2, STONE = 3, SAND = 4, WOOD = 5,
+      LEAVES = 6, WATER = 7, BEDROCK = 8, PLANKS = 9, BRICK = 10, SNOW = 11;
+
+// Блоки, доступные для установки, в том порядке, в котором они лежат в хотбаре
+const HOTBAR_BLOCKS = [GRASS, DIRT, STONE, SAND, WOOD, PLANKS, LEAVES, BRICK];
+
+function isSolidBlock(b) { return b !== AIR && b !== WATER; }
+
+/* ---------------------------------------------------------------------
+   2. ПРОЦЕДУРНЫЕ ТЕКСТУРЫ (атлас 4x4 ячейки по 16x16 пикселей)
+   --------------------------------------------------------------------- */
+const ATLAS = { cols: 4, rows: 4, cell: 16 };
+// координаты ячеек [col, row] для каждой "именованной" текстуры
+const TEX = {
+  grassTop: [0, 0], grassSide: [1, 0], dirt: [2, 0], stone: [3, 0],
+  sand: [0, 1], woodSide: [1, 1], woodTop: [2, 1], leaves: [3, 1],
+  water: [0, 2], bedrock: [1, 2], planks: [2, 2], brick: [3, 2],
+  snow: [0, 3],
+};
+
+let atlasCanvas = null;   // обычный 2D-канвас с атласом (для иконок хотбара)
+let atlasTexture = null;  // THREE.CanvasTexture, созданная из atlasCanvas
+
+function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
+
+function speckRect(ctx, x0, y0, w, h, colors) {
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      ctx.fillStyle = pick(colors);
+      ctx.fillRect(x0 + x, y0 + y, 1, 1);
+    }
+  }
+}
+
+function ringsRect(ctx, x0, y0, size, colors) {
+  const cx = x0 + size / 2, cy = y0 + size / 2;
+  for (let x = 0; x < size; x++) {
+    for (let y = 0; y < size; y++) {
+      const dx = x0 + x + 0.5 - cx, dy = y0 + y + 0.5 - cy;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      const idx = Math.floor(d * 1.15) % colors.length;
+      ctx.fillStyle = colors[idx];
+      ctx.fillRect(x0 + x, y0 + y, 1, 1);
+    }
+  }
+}
+
+function stripesRect(ctx, x0, y0, size, colors) {
+  for (let x = 0; x < size; x++) {
+    ctx.fillStyle = colors[x % colors.length];
+    ctx.fillRect(x0 + x, y0, 1, size);
+  }
+  // лёгкий шум поверх, чтобы полосы не выглядели идеально ровными
+  for (let x = 0; x < size; x++) {
+    for (let y = 0; y < size; y++) {
+      if (Math.random() < 0.12) {
+        ctx.fillStyle = 'rgba(0,0,0,0.10)';
+        ctx.fillRect(x0 + x, y0 + y, 1, 1);
+      }
+    }
+  }
+}
+
+function planksRect(ctx, x0, y0, size, base, seam) {
+  ctx.fillStyle = base;
+  ctx.fillRect(x0, y0, size, size);
+  for (let y = 0; y < size; y += 4) {
+    ctx.fillStyle = seam;
+    ctx.fillRect(x0, y0 + y, size, 1);
+  }
+  for (let x = 0; x < size; x++) {
+    if (Math.random() < 0.25) {
+      ctx.fillStyle = 'rgba(0,0,0,0.08)';
+      ctx.fillRect(x0 + x, y0, 1, size);
+    }
+  }
+}
+
+function brickRect(ctx, x0, y0, size, brick, mortar) {
+  ctx.fillStyle = mortar;
+  ctx.fillRect(x0, y0, size, size);
+  const rowH = 4;
+  for (let ry = 0; ry < size; ry += rowH) {
+    const offset = ((ry / rowH) % 2 === 0) ? 0 : 4;
+    for (let rx = -offset; rx < size; rx += 8) {
+      const startX = Math.max(rx, 0);
+      const w = Math.min(rx + 7, size - 1) - startX + 1;
+      if (w <= 0) continue;
+      ctx.fillStyle = brick;
+      ctx.fillRect(x0 + startX, y0 + ry, w, rowH - 1);
+    }
+  }
+}
+
+function grassSideRect(ctx, x0, y0, size, grassColors, dirtColors) {
+  speckRect(ctx, x0, y0, size, 4, grassColors);
+  speckRect(ctx, x0, y0 + 4, size, size - 4, dirtColors);
+  // тонкая неровная граница травы/земли
+  for (let x = 0; x < size; x++) {
+    if (Math.random() < 0.5) {
+      ctx.fillStyle = pick(grassColors);
+      ctx.fillRect(x0 + x, y0 + 3 + ((Math.random() * 2) | 0), 1, 1);
+    }
+  }
+}
+
+function buildTextureAtlas() {
+  const { cols, rows, cell } = ATLAS;
+  atlasCanvas = document.createElement('canvas');
+  atlasCanvas.width = cols * cell;
+  atlasCanvas.height = rows * cell;
+  const ctx = atlasCanvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  function at(key) { return [TEX[key][0] * cell, TEX[key][1] * cell]; }
+
+  let p;
+  p = at('grassTop'); speckRect(ctx, p[0], p[1], cell, cell, ['#5b9e30', '#66ad38', '#4f8f28', '#72bb44', '#5fa62e']);
+  p = at('grassSide'); grassSideRect(ctx, p[0], p[1], cell, ['#5b9e30', '#66ad38', '#4f8f28'], ['#6b4a2b', '#5e4025', '#7a5732']);
+  p = at('dirt'); speckRect(ctx, p[0], p[1], cell, cell, ['#6b4a2b', '#5e4025', '#7a5732', '#684427']);
+  p = at('stone'); speckRect(ctx, p[0], p[1], cell, cell, ['#8a8a8a', '#7d7d7d', '#949494', '#767676']);
+  p = at('sand'); speckRect(ctx, p[0], p[1], cell, cell, ['#dccf8f', '#e3d79c', '#d4c581', '#e8dcaa']);
+  p = at('woodSide'); stripesRect(ctx, p[0], p[1], cell, ['#6b4a2b', '#5e4025', '#7a5732', '#6b4a2b']);
+  p = at('woodTop'); ringsRect(ctx, p[0], p[1], cell, ['#c9a56a', '#b8935a', '#a9824c', '#bd9860']);
+  p = at('leaves'); speckRect(ctx, p[0], p[1], cell, cell, ['#3f8a2c', '#377a26', '#489a34', '#2f6e20']);
+  p = at('water'); speckRect(ctx, p[0], p[1], cell, cell, ['#3b6fd6', '#3564c4', '#4478e0', '#3060b8']);
+  p = at('bedrock'); speckRect(ctx, p[0], p[1], cell, cell, ['#2b2b2b', '#232323', '#333333', '#1c1c1c']);
+  p = at('planks'); planksRect(ctx, p[0], p[1], cell, '#b98b4e', '#93693a');
+  p = at('brick'); brickRect(ctx, p[0], p[1], cell, '#a0503b', '#8a8a8a');
+  p = at('snow'); speckRect(ctx, p[0], p[1], cell, cell, ['#f4f8ff', '#e9eefc', '#ffffff', '#dce6f5']);
+
+  atlasTexture = new THREE.CanvasTexture(atlasCanvas);
+  atlasTexture.magFilter = THREE.NearestFilter;
+  atlasTexture.minFilter = THREE.NearestFilter;
+  atlasTexture.generateMipmaps = false;
+  atlasTexture.wrapS = THREE.ClampToEdgeWrapping;
+  atlasTexture.wrapT = THREE.ClampToEdgeWrapping;
+  atlasTexture.needsUpdate = true;
+}
+
+// какая ячейка атласа используется для данного блока и направления грани
+function getAtlasCell(block, dir) {
+  switch (block) {
+    case GRASS: return dir[1] === 1 ? TEX.grassTop : (dir[1] === -1 ? TEX.dirt : TEX.grassSide);
+    case DIRT: return TEX.dirt;
+    case STONE: return TEX.stone;
+    case SAND: return TEX.sand;
+    case WOOD: return dir[1] !== 0 ? TEX.woodTop : TEX.woodSide;
+    case LEAVES: return TEX.leaves;
+    case WATER: return TEX.water;
+    case BEDROCK: return TEX.bedrock;
+    case PLANKS: return TEX.planks;
+    case BRICK: return TEX.brick;
+    case SNOW: return TEX.snow;
+    default: return TEX.stone;
+  }
+}
+
+// переводит локальные (0..1) UV грани в UV атласа с учётом flipY канваса
+function atlasUV(col, row, localU, localV) {
+  const { cols, rows } = ATLAS;
+  const inset = 0.02;
+  const lu = inset + localU * (1 - 2 * inset);
+  const lv = inset + localV * (1 - 2 * inset);
+  const u = (col + lu) / cols;
+  const v = 1 - (row + 1 - lv) / rows;
+  return [u, v];
+}
+
+// маленькая пиктограмма блока (для хотбара) в виде data URL PNG
+function hotbarIconDataURL(block) {
+  const cell = ATLAS.cell;
+  const [col, row] = getAtlasCell(block, [0, 1, 0]); // вид "сверху"
+  const tmp = document.createElement('canvas');
+  tmp.width = cell; tmp.height = cell;
+  const tctx = tmp.getContext('2d');
+  tctx.imageSmoothingEnabled = false;
+  tctx.drawImage(atlasCanvas, col * cell, row * cell, cell, cell, 0, 0, cell, cell);
+  return tmp.toDataURL();
+}
+
+/* ---------------------------------------------------------------------
+   3. ГЕНЕРАТОР СЛУЧАЙНЫХ ЧИСЕЛ И ШУМ ПЕРЛИНА (детерминированные по сиду)
+   --------------------------------------------------------------------- */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function buildPerlin(seed) {
+  const rng = mulberry32(seed);
+  const perm = new Uint8Array(512);
+  const p = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) p[i] = i;
+  for (let i = 255; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = p[i]; p[i] = p[j]; p[j] = tmp;
+  }
+  for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
+
+  function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+  function lerp(a, b, t) { return a + t * (b - a); }
+  function grad(hash, x, y) {
+    const h = hash & 7;
+    const u = h < 4 ? x : y;
+    const v = h < 4 ? y : x;
+    return ((h & 1) ? -u : u) + ((h & 2) ? -2 * v : 2 * v);
+  }
+  function noise2D(x, y) {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
+    x -= Math.floor(x); y -= Math.floor(y);
+    const u = fade(x), v = fade(y);
+    const aa = perm[X + perm[Y]], ab = perm[X + perm[Y + 1]];
+    const ba = perm[X + 1 + perm[Y]], bb = perm[X + 1 + perm[Y + 1]];
+    return lerp(
+      lerp(grad(aa, x, y), grad(ba, x - 1, y), u),
+      lerp(grad(ab, x, y - 1), grad(bb, x - 1, y - 1), u),
+      v
+    );
+  }
+  function fractal(x, y, octaves, persistence, scale) {
+    let total = 0, amp = 1, freq = 1, maxAmp = 0;
+    for (let i = 0; i < octaves; i++) {
+      total += noise2D(x * scale * freq, y * scale * freq) * amp;
+      maxAmp += amp;
+      amp *= persistence;
+      freq *= 2;
+    }
+    return total / maxAmp;
+  }
+  return { noise2D, fractal, rng };
+}
+
+/* ---------------------------------------------------------------------
+   4. КЛАСС МИРА: хранение блоков, генерация ландшафта, изменения
+   --------------------------------------------------------------------- */
+class VoxelWorld {
+  constructor(seed) {
+    this.seed = seed >>> 0;
+    this.data = new Uint8Array(WORLD_W * WORLD_H * WORLD_D);
+    this.perlin = buildPerlin(this.seed);
+    this.generate();
+  }
+
+  index(x, y, z) {
+    return x + z * WORLD_W + y * WORLD_W * WORLD_D;
+  }
+
+  inBounds(x, y, z) {
+    return x >= 0 && x < WORLD_W && y >= 0 && y < WORLD_H && z >= 0 && z < WORLD_D;
+  }
+
+  getBlock(x, y, z) {
+    if (!this.inBounds(x, y, z)) return AIR;
+    return this.data[this.index(x, y, z)];
+  }
+
+  setBlock(x, y, z, block) {
+    if (!this.inBounds(x, y, z)) return;
+    this.data[this.index(x, y, z)] = block;
+  }
+
+  generate() {
+    const { fractal, rng } = this.perlin;
+    const heights = new Int16Array(WORLD_W * WORLD_D);
+    for (let x = 0; x < WORLD_W; x++) {
+      for (let z = 0; z < WORLD_D; z++) {
+        const n = fractal(x, z, 4, 0.5, 0.045);
+        const n2 = fractal(x + 999, z + 999, 2, 0.5, 0.01);
+        let h = 10 + n * 6 + n2 * 5;
+        h = Math.round(h);
+        h = Math.max(2, Math.min(WORLD_H - 4, h));
+        heights[x + z * WORLD_W] = h;
+      }
+    }
+
+    for (let x = 0; x < WORLD_W; x++) {
+      for (let z = 0; z < WORLD_D; z++) {
+        const h = heights[x + z * WORLD_W];
+        for (let y = 0; y < WORLD_H; y++) {
+          let block = AIR;
+          if (y === 0) block = BEDROCK;
+          else if (y < h - 4) block = STONE;
+          else if (y < h) block = DIRT;
+          else if (y === h) {
+            if (h <= WATER_LEVEL + 1) block = SAND;
+            else if (h > WATER_LEVEL + 9) block = SNOW;
+            else block = GRASS;
+          } else if (y <= WATER_LEVEL && y > h) {
+            block = WATER;
+          }
+          this.setBlock(x, y, z, block);
+        }
+      }
+    }
+
+    for (let x = 3; x < WORLD_W - 3; x++) {
+      for (let z = 3; z < WORLD_D - 3; z++) {
+        const h = heights[x + z * WORLD_W];
+        if (h <= WATER_LEVEL + 1) continue;
+        if (rng() < 0.012) {
+          this.placeTree(x, h + 1, z, rng);
+        }
+      }
+    }
+  }
+
+  placeTree(x, y, z, rng) {
+    const trunkHeight = 3 + Math.floor(rng() * 2);
+    for (let i = 0; i < trunkHeight; i++) {
+      this.setBlock(x, y + i, z, WOOD);
+    }
+    const topY = y + trunkHeight;
+    for (let dx = -2; dx <= 2; dx++) {
+      for (let dz = -2; dz <= 2; dz++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const dist = Math.abs(dx) + Math.abs(dz) + Math.abs(dy);
+          if (dist <= 3 && !(dx === 0 && dz === 0 && dy <= 0)) {
+            if (this.getBlock(x + dx, topY + dy, z + dz) === AIR) {
+              this.setBlock(x + dx, topY + dy, z + dz, LEAVES);
+            }
+          }
+        }
+      }
+    }
+    this.setBlock(x, topY + 1, z, LEAVES);
+  }
+
+  heightAt(x, z) {
+    for (let y = WORLD_H - 1; y >= 0; y--) {
+      if (isSolidBlock(this.getBlock(x, y, z))) return y;
+    }
+    return 1;
+  }
+
+  applyEdits(edits) {
+    for (const key in edits) {
+      const [x, y, z] = key.split(',').map(Number);
+      this.setBlock(x, y, z, edits[key]);
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------
+   5. ПОСТРОЕНИЕ МЕША ЧАНКА (culling скрытых граней + текстурные UV)
+   --------------------------------------------------------------------- */
+const FACES = [
+  { dir: [1, 0, 0],  corners: [[1,0,0],[1,1,0],[1,1,1],[1,0,1]] },  // +X
+  { dir: [-1, 0, 0], corners: [[0,0,1],[0,1,1],[0,1,0],[0,0,0]] },  // -X
+  { dir: [0, 1, 0],  corners: [[0,1,0],[0,1,1],[1,1,1],[1,1,0]] },  // +Y (верх)
+  { dir: [0, -1, 0], corners: [[0,0,1],[0,0,0],[1,0,0],[1,0,1]] },  // -Y (низ)
+  { dir: [0, 0, 1],  corners: [[1,0,1],[1,1,1],[0,1,1],[0,0,1]] },  // +Z
+  { dir: [0, 0, -1], corners: [[0,0,0],[0,1,0],[1,1,0],[1,0,0]] },  // -Z
+];
+
+function shadeForFace(dir) {
+  if (dir[1] === 1) return 1.0;
+  if (dir[1] === -1) return 0.55;
+  if (dir[0] !== 0) return 0.78;
+  return 0.88;
+}
+
+// локальные UV (0..1) для угла грани, с учётом ориентации (важно для травы/брёвен)
+function localUV(dir, corner) {
+  if (dir[1] !== 0) return [corner[0], corner[2]];      // верх/низ: X,Z
+  if (dir[0] !== 0) return [corner[2], corner[1]];       // X-грани: Z,Y
+  return [corner[0], corner[1]];                          // Z-грани: X,Y
+}
+
+function buildChunkGeometry(world, cx, cz) {
+  const opaque = { pos: [], norm: [], col: [], uv: [], idx: [], count: 0 };
+  const water = { pos: [], norm: [], col: [], uv: [], idx: [], count: 0 };
+
+  const x0 = cx * CHUNK_SIZE, x1 = x0 + CHUNK_SIZE;
+  const z0 = cz * CHUNK_SIZE, z1 = z0 + CHUNK_SIZE;
+
+  function pushFace(target, x, y, z, dir, corners, shade, cell) {
+    const baseIndex = target.count;
+    for (let i = 0; i < 4; i++) {
+      const c = corners[i];
+      target.pos.push(x + c[0], y + c[1], z + c[2]);
+      target.norm.push(dir[0], dir[1], dir[2]);
+      target.col.push(shade, shade, shade);
+      const [lu, lv] = localUV(dir, c);
+      const [u, v] = atlasUV(cell[0], cell[1], lu, lv);
+      target.uv.push(u, v);
+    }
+    target.idx.push(baseIndex, baseIndex + 1, baseIndex + 2, baseIndex, baseIndex + 2, baseIndex + 3);
+    target.count += 4;
+  }
+
+  for (let x = x0; x < x1; x++) {
+    for (let z = z0; z < z1; z++) {
+      for (let y = 0; y < WORLD_H; y++) {
+        const block = world.getBlock(x, y, z);
+        if (block === AIR) continue;
+        const iAmWater = block === WATER;
+
+        for (const face of FACES) {
+          const nx = x + face.dir[0], ny = y + face.dir[1], nz = z + face.dir[2];
+          const neighbor = world.getBlock(nx, ny, nz);
+          let visible;
+          if (iAmWater) visible = neighbor === AIR;
+          else visible = neighbor === AIR || neighbor === WATER;
+          if (!visible) continue;
+
+          const shade = shadeForFace(face.dir);
+          const cell = getAtlasCell(block, face.dir);
+          pushFace(iAmWater ? water : opaque, x, y, z, face.dir, face.corners, shade, cell);
+        }
+      }
+    }
+  }
+
+  return { opaque, water };
+}
+
+function arraysToGeometry(data) {
+  if (data.count === 0) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(data.pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(data.norm, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(data.col, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(data.uv, 2));
+  geo.setIndex(data.idx);
+  return geo;
+}
+
+/* ---------------------------------------------------------------------
+   6. МЕНЕДЖЕР ЧАНКОВ (рендер + перестройка при изменениях)
+   --------------------------------------------------------------------- */
+class ChunkManager {
+  constructor(scene, world) {
+    this.scene = scene;
+    this.world = world;
+    this.opaqueMaterial = new THREE.MeshLambertMaterial({
+      map: atlasTexture, vertexColors: true, side: THREE.DoubleSide
+    });
+    this.waterMaterial = new THREE.MeshLambertMaterial({
+      map: atlasTexture, vertexColors: true, side: THREE.DoubleSide,
+      transparent: true, opacity: 0.68
+    });
+    this.meshes = {};
+    this.buildAll();
+  }
+
+  key(cx, cz) { return cx + ',' + cz; }
+
+  buildAll() {
+    for (let cx = 0; cx < CHUNKS_X; cx++) {
+      for (let cz = 0; cz < CHUNKS_Z; cz++) {
+        this.rebuildChunk(cx, cz);
+      }
+    }
+  }
+
+  rebuildChunk(cx, cz) {
+    const k = this.key(cx, cz);
+    const old = this.meshes[k];
+    if (old) {
+      if (old.opaque) { this.scene.remove(old.opaque); old.opaque.geometry.dispose(); }
+      if (old.water) { this.scene.remove(old.water); old.water.geometry.dispose(); }
+    }
+    const { opaque, water } = buildChunkGeometry(this.world, cx, cz);
+    const opaqueGeo = arraysToGeometry(opaque);
+    const waterGeo = arraysToGeometry(water);
+    const entry = { opaque: null, water: null };
+    if (opaqueGeo) {
+      const mesh = new THREE.Mesh(opaqueGeo, this.opaqueMaterial);
+      this.scene.add(mesh);
+      entry.opaque = mesh;
+    }
+    if (waterGeo) {
+      const mesh = new THREE.Mesh(waterGeo, this.waterMaterial);
+      this.scene.add(mesh);
+      entry.water = mesh;
+    }
+    this.meshes[k] = entry;
+  }
+
+  markDirtyAroundBlock(x, z) {
+    const cx = Math.floor(x / CHUNK_SIZE);
+    const cz = Math.floor(z / CHUNK_SIZE);
+    const toRebuild = new Set();
+    toRebuild.add(cx + ',' + cz);
+    const lx = x - cx * CHUNK_SIZE, lz = z - cz * CHUNK_SIZE;
+    if (lx === 0 && cx > 0) toRebuild.add((cx - 1) + ',' + cz);
+    if (lx === CHUNK_SIZE - 1 && cx < CHUNKS_X - 1) toRebuild.add((cx + 1) + ',' + cz);
+    if (lz === 0 && cz > 0) toRebuild.add(cx + ',' + (cz - 1));
+    if (lz === CHUNK_SIZE - 1 && cz < CHUNKS_Z - 1) toRebuild.add(cx + ',' + (cz + 1));
+    for (const k of toRebuild) {
+      const [a, b] = k.split(',').map(Number);
+      this.rebuildChunk(a, b);
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------
+   7. СОХРАНЕНИЕ МИРОВ (localStorage)
+   --------------------------------------------------------------------- */
+const STORAGE_WORLDS_KEY = 'voxelcraft_worlds_v1';
+
+function loadWorldsList() {
+  try {
+    const raw = localStorage.getItem(STORAGE_WORLDS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) { return []; }
+}
+function saveWorldsList(list) {
+  try { localStorage.setItem(STORAGE_WORLDS_KEY, JSON.stringify(list)); } catch (e) {}
+}
+function editsKeyFor(name) { return 'voxelcraft_edits_' + name; }
+function loadEditsFor(name) {
+  try {
+    const raw = localStorage.getItem(editsKeyFor(name));
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) { return {}; }
+}
+function saveEditsFor(name, edits) {
+  try { localStorage.setItem(editsKeyFor(name), JSON.stringify(edits)); } catch (e) {}
+}
+function deleteWorldStorage(name) {
+  try {
+    localStorage.removeItem(editsKeyFor(name));
+    const list = loadWorldsList().filter(w => w.name !== name);
+    saveWorldsList(list);
+  } catch (e) {}
+}
+
+/* ---------------------------------------------------------------------
+   8. ГЛОБАЛЬНОЕ СОСТОЯНИЕ ИГРЫ
+   --------------------------------------------------------------------- */
+let scene, camera, renderer, world, chunkManager;
+let currentWorldName = null;
+let edits = {};
+let autosaveTimer = null;
+let rotatePromptDismissed = false;
+
+const player = {
+  pos: new THREE.Vector3(WORLD_W / 2, WORLD_H, WORLD_D / 2),
+  vel: new THREE.Vector3(0, 0, 0),
+  yaw: 0,
+  pitch: 0,
+  onGround: false,
+  height: 1.7,
+  eyeHeight: 1.6,
+  radius: 0.32,
+};
+
+const GRAVITY = -22;
+const JUMP_SPEED = 8.2;
+const MOVE_SPEED = 4.6;
+
+let selectedHotbarIndex = 0;
+let targetedBlock = null;
+let placeAtBlock = null;
+
+const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+
+const keys = {};
+let pointerLocked = false;
+
+/* ---------------------------------------------------------------------
+   9. ИНИЦИАЛИЗАЦИЯ THREE.JS СЦЕНЫ
+   --------------------------------------------------------------------- */
+function initScene() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x8fc7ff);
+  scene.fog = new THREE.Fog(0x8fc7ff, 22, 62);
+
+  camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 200);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.getElementById('gameContainer').appendChild(renderer.domElement);
+
+  const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+  scene.add(ambient);
+  const sun = new THREE.DirectionalLight(0xffffff, 0.85);
+  sun.position.set(60, 90, 40);
+  scene.add(sun);
+
+  window.addEventListener('resize', onWindowResize);
+}
+
+function onWindowResize() {
+  if (!camera || !renderer) return;
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  updateRotatePrompt();
+}
+
+/* ---------------------------------------------------------------------
+   10. АЛЬБОМНАЯ ОРИЕНТАЦИЯ / ПОЛНОЭКРАННЫЙ РЕЖИМ (для APK и мобильных браузеров)
+   --------------------------------------------------------------------- */
+function setupWebManifest() {
+  // Встраиваем Web App Manifest прямо в страницу (без отдельного файла).
+  // "orientation": "landscape" — это то, что реально соблюдают
+  // Trusted Web Activity / PWA-обёртки при сборке APK.
+  const manifest = {
+    name: "Craft",
+    short_name: "Craft",
+    start_url: ".",
+    display: "fullscreen",
+    orientation: "landscape",
+    background_color: "#10182a",
+    theme_color: "#10182a",
+  };
+  try {
+    const blob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
+    document.getElementById('webAppManifest').setAttribute('href', URL.createObjectURL(blob));
+  } catch (e) {}
+}
+
+function tryEnterImmersiveLandscape() {
+  try {
+    const el = document.documentElement;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+    if (req) req.call(el).catch(() => {});
+  } catch (e) {}
+  try {
+    if (screen.orientation && screen.orientation.lock) {
+      screen.orientation.lock('landscape').catch(() => {});
+    }
+  } catch (e) {}
+}
+
+function releaseImmersiveMode() {
+  try {
+    if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+  } catch (e) {}
+  try {
+    if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock();
+  } catch (e) {}
+}
+
+function updateRotatePrompt() {
+  const el = document.getElementById('rotatePrompt');
+  if (!el) return;
+  if (!isTouchDevice) { el.style.display = 'none'; return; }
+  const gameVisible = document.getElementById('gameContainer').style.display === 'block';
+  const pauseOpen = document.getElementById('pauseScreen').style.display === 'flex';
+  const isPortrait = window.innerHeight > window.innerWidth;
+  if (gameVisible && !pauseOpen && isPortrait && !rotatePromptDismissed) {
+    el.style.display = 'flex';
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+/* ---------------------------------------------------------------------
+   11. СОЗДАНИЕ / ЗАГРУЗКА МИРА
+   --------------------------------------------------------------------- */
+function startWorld(name, seed, existingEdits) {
+  currentWorldName = name;
+  edits = existingEdits || {};
+  rotatePromptDismissed = false;
+
+  showLoading(true, 'Генерация мира «' + name + '»...');
+
+  setTimeout(() => {
+    if (!scene) initScene();
+    if (!atlasTexture) buildTextureAtlas();
+
+    if (chunkManager) {
+      for (const k in chunkManager.meshes) {
+        const e = chunkManager.meshes[k];
+        if (e.opaque) { scene.remove(e.opaque); e.opaque.geometry.dispose(); }
+        if (e.water) { scene.remove(e.water); e.water.geometry.dispose(); }
+      }
+    }
+
+    world = new VoxelWorld(seed);
+    world.applyEdits(edits);
+    chunkManager = new ChunkManager(scene, world);
+
+    const px = Math.floor(WORLD_W / 2), pz = Math.floor(WORLD_D / 2);
+    const h = world.heightAt(px, pz);
+    player.pos.set(px + 0.5, h + 3, pz + 0.5);
+    player.vel.set(0, 0, 0);
+    player.yaw = Math.PI;
+    player.pitch = -0.15;
+
+    document.getElementById('worldLabel').textContent = name + '  (seed: ' + seed + ')';
+    document.getElementById('menuScreen').style.display = 'none';
+    document.getElementById('gameContainer').style.display = 'block';
+    document.getElementById('touchControls').style.display = isTouchDevice ? 'block' : 'none';
+    showHint(isTouchDevice
+      ? 'Джойстик слева — движение, палец справа — взгляд. Кнопки — прыжок / ломать / ставить.'
+      : 'Кликните по экрану, чтобы захватить курсор. WASD — движение, пробел — прыжок, ЛКМ — ломать, ПКМ — ставить.');
+
+    buildHotbar();
+    showLoading(false);
+    updateRotatePrompt();
+
+    if (autosaveTimer) clearInterval(autosaveTimer);
+    autosaveTimer = setInterval(persistCurrentWorld, 8000);
+
+    if (!animating) { animating = true; requestAnimationFrame(animate); }
+  }, 30);
+}
+
+function persistCurrentWorld() {
+  if (!currentWorldName) return;
+  saveEditsFor(currentWorldName, edits);
+}
+
+function showLoading(visible, text) {
+  const el = document.getElementById('loadingScreen');
+  el.style.display = visible ? 'flex' : 'none';
+  if (text) document.getElementById('loadingText').textContent = text;
+}
+
+let hintTimeout = null;
+function showHint(text) {
+  const el = document.getElementById('hint');
+  el.textContent = text;
+  el.style.opacity = '1';
+  if (hintTimeout) clearTimeout(hintTimeout);
+  hintTimeout = setTimeout(() => { el.style.opacity = '0'; }, 6000);
+}
+
+/* ---------------------------------------------------------------------
+   12. ХОТБАР (иконки из текстурного атласа)
+   --------------------------------------------------------------------- */
+function buildHotbar() {
+  const bar = document.getElementById('hotbar');
+  bar.innerHTML = '';
+  HOTBAR_BLOCKS.forEach((block, i) => {
+    const slot = document.createElement('div');
+    slot.className = 'hotSlot' + (i === selectedHotbarIndex ? ' selected' : '');
+    slot.style.backgroundImage = 'url(' + hotbarIconDataURL(block) + ')';
+    const num = document.createElement('div');
+    num.className = 'num';
+    num.textContent = (i + 1);
+    slot.appendChild(num);
+    slot.addEventListener('pointerdown', (e) => { e.preventDefault(); selectHotbar(i); });
+    bar.appendChild(slot);
+  });
+}
+function selectHotbar(i) {
+  selectedHotbarIndex = ((i % HOTBAR_BLOCKS.length) + HOTBAR_BLOCKS.length) % HOTBAR_BLOCKS.length;
+  const slots = document.querySelectorAll('.hotSlot');
+  slots.forEach((s, idx) => s.classList.toggle('selected', idx === selectedHotbarIndex));
+}
+
+/* ---------------------------------------------------------------------
+   13. РЕЙКАСТИНГ ПО ВОКСЕЛЯМ (DDA)
+   --------------------------------------------------------------------- */
+function raycastVoxel(origin, direction, maxDist) {
+  let x = Math.floor(origin.x), y = Math.floor(origin.y), z = Math.floor(origin.z);
+  const stepX = direction.x > 0 ? 1 : -1;
+  const stepY = direction.y > 0 ? 1 : -1;
+  const stepZ = direction.z > 0 ? 1 : -1;
+
+  function tDelta(d) { return d === 0 ? Infinity : Math.abs(1 / d); }
+  const tDeltaX = tDelta(direction.x), tDeltaY = tDelta(direction.y), tDeltaZ = tDelta(direction.z);
+
+  function firstT(pos, dir, step) {
+    if (dir === 0) return Infinity;
+    const boundary = step > 0 ? Math.floor(pos) + 1 : Math.floor(pos);
+    return (boundary - pos) / dir;
+  }
+  let tMaxX = firstT(origin.x, direction.x, stepX);
+  let tMaxY = firstT(origin.y, direction.y, stepY);
+  let tMaxZ = firstT(origin.z, direction.z, stepZ);
+
+  let lastStepAxis = null;
+  let dist = 0;
+
+  for (let i = 0; i < 128 && dist < maxDist; i++) {
+    const block = world.getBlock(x, y, z);
+    if (isSolidBlock(block)) {
+      let prev = { x, y, z };
+      if (lastStepAxis === 'x') prev = { x: x - stepX, y, z };
+      else if (lastStepAxis === 'y') prev = { x, y: y - stepY, z };
+      else if (lastStepAxis === 'z') prev = { x, y, z: z - stepZ };
+      return { hit: { x, y, z }, place: prev };
+    }
+    if (tMaxX < tMaxY) {
+      if (tMaxX < tMaxZ) { x += stepX; dist = tMaxX; tMaxX += tDeltaX; lastStepAxis = 'x'; }
+      else { z += stepZ; dist = tMaxZ; tMaxZ += tDeltaZ; lastStepAxis = 'z'; }
+    } else {
+      if (tMaxY < tMaxZ) { y += stepY; dist = tMaxY; tMaxY += tDeltaY; lastStepAxis = 'y'; }
+      else { z += stepZ; dist = tMaxZ; tMaxZ += tDeltaZ; lastStepAxis = 'z'; }
+    }
+  }
+  return null;
+}
+
+function updateTargetedBlock() {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const origin = camera.position.clone();
+  const result = raycastVoxel(origin, dir, 6.5);
+  if (result) {
+    targetedBlock = result.hit;
+    placeAtBlock = result.place;
+  } else {
+    targetedBlock = null;
+    placeAtBlock = null;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   14. РАЗРУШЕНИЕ / УСТАНОВКА БЛОКОВ
+   --------------------------------------------------------------------- */
+function breakBlock() {
+  if (!targetedBlock) return;
+  const { x, y, z } = targetedBlock;
+  if (world.getBlock(x, y, z) === BEDROCK) return;
+  world.setBlock(x, y, z, AIR);
+  edits[x + ',' + y + ',' + z] = AIR;
+  chunkManager.markDirtyAroundBlock(x, z);
+}
+
+function placeBlock() {
+  if (!placeAtBlock) return;
+  const { x, y, z } = placeAtBlock;
+  if (!world.inBounds(x, y, z)) return;
+  if (world.getBlock(x, y, z) !== AIR) return;
+  const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+  const pyFeet = Math.floor(player.pos.y - 0.01), pyHead = Math.floor(player.pos.y - player.eyeHeight + player.height - 0.01);
+  if (x === px && z === pz && (y === pyFeet || y === pyHead)) return;
+  const block = HOTBAR_BLOCKS[selectedHotbarIndex];
+  world.setBlock(x, y, z, block);
+  edits[x + ',' + y + ',' + z] = block;
+  chunkManager.markDirtyAroundBlock(x, z);
+}
+
+/* ---------------------------------------------------------------------
+   15. ФИЗИКА И ДВИЖЕНИЕ ИГРОКА
+   --------------------------------------------------------------------- */
+function isSolidAt(x, y, z) {
+  return isSolidBlock(world.getBlock(Math.floor(x), Math.floor(y), Math.floor(z)));
+}
+
+function collideAxis(pos, delta, axis) {
+  const r = player.radius;
+  const testPos = pos.clone();
+  testPos[axis] += delta;
+
+  const minX = testPos.x - r, maxX = testPos.x + r;
+  const minZ = testPos.z - r, maxZ = testPos.z + r;
+  const minY = testPos.y;
+  const maxY = testPos.y + player.height;
+
+  const x0 = Math.floor(minX), x1 = Math.floor(maxX);
+  const y0 = Math.floor(minY), y1 = Math.floor(maxY - 0.001);
+  const z0 = Math.floor(minZ), z1 = Math.floor(maxZ);
+
+  for (let x = x0; x <= x1; x++) {
+    for (let y = y0; y <= y1; y++) {
+      for (let z = z0; z <= z1; z++) {
+        if (isSolidAt(x, y, z)) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function movePlayer(dt) {
+  let moveX = 0, moveZ = 0;
+  if (keys['KeyW']) { moveZ -= 1; }
+  if (keys['KeyS']) { moveZ += 1; }
+  if (keys['KeyA']) { moveX -= 1; }
+  if (keys['KeyD']) { moveX += 1; }
+
+  if (touchMove.active) {
+    moveX += touchMove.x;
+    moveZ += touchMove.y;
+  }
+
+  const len = Math.hypot(moveX, moveZ);
+  if (len > 0.0001) { moveX /= len; moveZ /= len; }
+
+  const sinYaw = Math.sin(player.yaw), cosYaw = Math.cos(player.yaw);
+  const forwardX = -sinYaw, forwardZ = -cosYaw;
+  const rightX = cosYaw, rightZ = -sinYaw;
+
+  const dirX = forwardX * (-moveZ) + rightX * moveX;
+  const dirZ = forwardZ * (-moveZ) + rightZ * moveX;
+
+  player.vel.x = dirX * MOVE_SPEED;
+  player.vel.z = dirZ * MOVE_SPEED;
+
+  player.vel.y += GRAVITY * dt;
+  if (player.vel.y < -30) player.vel.y = -30;
+
+  if ((keys['Space'] || touchJumpPressed) && player.onGround) {
+    player.vel.y = JUMP_SPEED;
+    player.onGround = false;
+  }
+
+  const dx = player.vel.x * dt;
+  const dy = player.vel.y * dt;
+  const dz = player.vel.z * dt;
+
+  if (collideAxis(player.pos, dx, 'x')) player.pos.x += dx; else player.vel.x = 0;
+  if (collideAxis(player.pos, dz, 'z')) player.pos.z += dz; else player.vel.z = 0;
+
+  if (collideAxis(player.pos, dy, 'y')) {
+    player.pos.y += dy;
+    player.onGround = false;
+  } else {
+    if (player.vel.y < 0) player.onGround = true;
+    player.vel.y = 0;
+  }
+
+  player.pos.x = Math.max(1, Math.min(WORLD_W - 1, player.pos.x));
+  player.pos.z = Math.max(1, Math.min(WORLD_D - 1, player.pos.z));
+  if (player.pos.y < -10) {
+    const h = world.heightAt(Math.floor(player.pos.x), Math.floor(player.pos.z));
+    player.pos.set(Math.floor(player.pos.x) + 0.5, h + 3, Math.floor(player.pos.z) + 0.5);
+    player.vel.set(0, 0, 0);
+  }
+}
+
+/* ---------------------------------------------------------------------
+   16. УПРАВЛЕНИЕ — ПК (клавиатура + мышь + pointer lock)
+   --------------------------------------------------------------------- */
+window.addEventListener('keydown', (e) => {
+  keys[e.code] = true;
+  if (e.code >= 'Digit1' && e.code <= 'Digit8') {
+    selectHotbar(parseInt(e.code.slice(-1), 10) - 1);
+  }
+  if (e.code === 'Escape') {
+    togglePause();
+  }
+});
+window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+function setupDesktopMouse() {
+  const canvasHolder = document.getElementById('gameContainer');
+
+  canvasHolder.addEventListener('click', () => {
+    if (isTouchDevice) return;
+    if (!pointerLocked && document.getElementById('pauseScreen').style.display !== 'flex') {
+      renderer.domElement.requestPointerLock();
+    }
+  });
+
+  document.addEventListener('pointerlockchange', () => {
+    pointerLocked = document.pointerLockElement === renderer.domElement;
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!pointerLocked) return;
+    const sensitivity = 0.0022;
+    player.yaw -= e.movementX * sensitivity;
+    player.pitch -= e.movementY * sensitivity;
+    player.pitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, player.pitch));
+  });
+
+  document.addEventListener('mousedown', (e) => {
+    if (isTouchDevice) return;
+    if (!pointerLocked) return;
+    if (e.button === 0) breakBlock();
+    else if (e.button === 2) placeBlock();
+  });
+  document.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+
+/* ---------------------------------------------------------------------
+   17. УПРАВЛЕНИЕ — МОБИЛЬНОЕ (джойстик + взгляд пальцем + кнопки)
+   --------------------------------------------------------------------- */
+const touchMove = { active: false, x: 0, y: 0 };
+let touchJumpPressed = false;
+
+function setupTouchControls() {
+  const joyZone = document.getElementById('joyZone');
+  const joyStick = document.getElementById('joyStick');
+  const lookZone = document.getElementById('lookZone');
+  const btnBreak = document.getElementById('btnBreak');
+  const btnPlace = document.getElementById('btnPlace');
+  const btnJump = document.getElementById('btnJump');
+
+  let joyTouchId = null, joyCenter = { x: 0, y: 0 };
+  const joyRadius = 52;
+
+  joyZone.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    joyTouchId = t.identifier;
+    const rect = joyZone.getBoundingClientRect();
+    joyCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    touchMove.active = true;
+  }, { passive: false });
+
+  window.addEventListener('touchmove', (e) => {
+    for (const t of e.changedTouches) {
+      if (t.identifier === joyTouchId) {
+        e.preventDefault();
+        let dx = t.clientX - joyCenter.x;
+        let dy = t.clientY - joyCenter.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > joyRadius) { dx = dx / dist * joyRadius; dy = dy / dist * joyRadius; }
+        joyStick.style.left = (37 + dx) + 'px';
+        joyStick.style.top = (37 + dy) + 'px';
+        touchMove.x = dx / joyRadius;
+        touchMove.y = dy / joyRadius;
+      }
+    }
+  }, { passive: false });
+
+  window.addEventListener('touchend', (e) => {
+    for (const t of e.changedTouches) {
+      if (t.identifier === joyTouchId) {
+        joyTouchId = null;
+        touchMove.active = false;
+        touchMove.x = 0; touchMove.y = 0;
+        joyStick.style.left = '37px';
+        joyStick.style.top = '37px';
+      }
+    }
+  });
+
+  let lookTouchId = null, lastLook = { x: 0, y: 0 };
+  lookZone.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    lookTouchId = t.identifier;
+    lastLook = { x: t.clientX, y: t.clientY };
+  }, { passive: false });
+
+  window.addEventListener('touchmove', (e) => {
+    for (const t of e.changedTouches) {
+      if (t.identifier === lookTouchId) {
+        e.preventDefault();
+        const dx = t.clientX - lastLook.x;
+        const dy = t.clientY - lastLook.y;
+        lastLook = { x: t.clientX, y: t.clientY };
+        const sensitivity = 0.0042;
+        player.yaw -= dx * sensitivity;
+        player.pitch -= dy * sensitivity;
+        player.pitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, player.pitch));
+      }
+    }
+  }, { passive: false });
+
+  window.addEventListener('touchend', (e) => {
+    for (const t of e.changedTouches) {
+      if (t.identifier === lookTouchId) lookTouchId = null;
+    }
+  });
+
+  let lookStart = null;
+  lookZone.addEventListener('touchstart', (e) => {
+    const t = e.changedTouches[0];
+    lookStart = { x: t.clientX, y: t.clientY, time: Date.now() };
+  });
+  lookZone.addEventListener('touchend', (e) => {
+    if (!lookStart) return;
+    const t = e.changedTouches[0];
+    const dist = Math.hypot(t.clientX - lookStart.x, t.clientY - lookStart.y);
+    const dt = Date.now() - lookStart.time;
+    if (dist < 12 && dt < 280) breakBlock();
+    lookStart = null;
+  });
+
+  btnBreak.addEventListener('touchstart', (e) => { e.preventDefault(); breakBlock(); });
+  btnPlace.addEventListener('touchstart', (e) => { e.preventDefault(); placeBlock(); });
+  btnJump.addEventListener('touchstart', (e) => { e.preventDefault(); touchJumpPressed = true; });
+  btnJump.addEventListener('touchend', (e) => { e.preventDefault(); touchJumpPressed = false; });
+}
+
+/* ---------------------------------------------------------------------
+   18. ГЛАВНЫЙ ЦИКЛ РЕНДЕРА
+   --------------------------------------------------------------------- */
+let animating = false;
+let lastTime = performance.now();
+
+function animate(now) {
+  requestAnimationFrame(animate);
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+
+  if (document.getElementById('pauseScreen').style.display === 'flex') {
+    renderer.render(scene, camera);
+    return;
+  }
+
+  movePlayer(dt);
+
+  camera.position.set(player.pos.x, player.pos.y + player.eyeHeight, player.pos.z);
+  camera.rotation.order = 'YXZ';
+  camera.rotation.y = player.yaw;
+  camera.rotation.x = player.pitch;
+
+  updateTargetedBlock();
+
+  renderer.render(scene, camera);
+}
+
+/* ---------------------------------------------------------------------
+   19. МЕНЮ: список миров, создание, загрузка, удаление
+   --------------------------------------------------------------------- */
+function refreshWorldsList() {
+  const container = document.getElementById('worldsList');
+  const emptyMsg = document.getElementById('emptyWorldsMsg');
+  const worlds = loadWorldsList();
+  container.innerHTML = '';
+  emptyMsg.style.display = worlds.length === 0 ? 'block' : 'none';
+
+  worlds.slice().reverse().forEach((w) => {
+    const row = document.createElement('div');
+    row.className = 'worldRow';
+
+    const info = document.createElement('div');
+    info.className = 'info';
+    const b = document.createElement('b'); b.textContent = w.name;
+    const span = document.createElement('span'); span.textContent = 'seed: ' + w.seed;
+    info.appendChild(b); info.appendChild(span);
+
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    const loadBtn = document.createElement('button');
+    loadBtn.className = 'btnSecondary btnSmall'; loadBtn.textContent = 'Играть';
+    loadBtn.addEventListener('click', () => {
+      if (isTouchDevice) tryEnterImmersiveLandscape();
+      const existingEdits = loadEditsFor(w.name);
+      startWorld(w.name, w.seed, existingEdits);
+    });
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btnDanger btnSmall'; delBtn.textContent = '✕';
+    delBtn.addEventListener('click', () => {
+      if (confirm('Удалить мир «' + w.name + '»?')) {
+        deleteWorldStorage(w.name);
+        refreshWorldsList();
+      }
+    });
+    actions.appendChild(loadBtn);
+    actions.appendChild(delBtn);
+
+    row.appendChild(info);
+    row.appendChild(actions);
+    container.appendChild(row);
+  });
+}
+
+function createNewWorldFromMenu() {
+  const nameInput = document.getElementById('newWorldName');
+  const seedInput = document.getElementById('newWorldSeed');
+
+  let name = nameInput.value.trim();
+  if (!name) name = 'Мир ' + Math.floor(Math.random() * 10000);
+
+  let seed = parseInt(seedInput.value, 10);
+  if (isNaN(seed)) seed = Math.floor(Math.random() * 1000000000);
+
+  const worlds = loadWorldsList();
+  let finalName = name;
+  let suffix = 2;
+  while (worlds.some(w => w.name === finalName)) {
+    finalName = name + ' (' + suffix + ')';
+    suffix++;
+  }
+
+  worlds.push({ name: finalName, seed: seed, created: Date.now() });
+  saveWorldsList(worlds);
+  saveEditsFor(finalName, {});
+
+  if (isTouchDevice) tryEnterImmersiveLandscape();
+  startWorld(finalName, seed, {});
+}
+
+/* ---------------------------------------------------------------------
+   20. ПАУЗА И ВЫХОД В МЕНЮ
+   --------------------------------------------------------------------- */
+function togglePause() {
+  const pauseEl = document.getElementById('pauseScreen');
+  const isOpen = pauseEl.style.display === 'flex';
+  if (isOpen) {
+    pauseEl.style.display = 'none';
+  } else {
+    pauseEl.style.display = 'flex';
+    if (document.pointerLockElement) document.exitPointerLock();
+  }
+  updateRotatePrompt();
+}
+
+function quitToMenu() {
+  persistCurrentWorld();
+  document.getElementById('pauseScreen').style.display = 'none';
+  document.getElementById('gameContainer').style.display = 'none';
+  document.getElementById('menuScreen').style.display = 'flex';
+  if (document.pointerLockElement) document.exitPointerLock();
+  releaseImmersiveMode();
+  updateRotatePrompt();
+  refreshWorldsList();
+}
+
+/* ---------------------------------------------------------------------
+   21. ПРИВЯЗКА КНОПОК ИНТЕРФЕЙСА
+   --------------------------------------------------------------------- */
+function bindUI() {
+  document.getElementById('randSeedBtn').addEventListener('click', () => {
+    document.getElementById('newWorldSeed').value = Math.floor(Math.random() * 1000000000);
+  });
+  document.getElementById('createWorldBtn').addEventListener('click', createNewWorldFromMenu);
+  document.getElementById('menuBtn').addEventListener('click', togglePause);
+  document.getElementById('resumeBtn').addEventListener('click', togglePause);
+  document.getElementById('saveNowBtn').addEventListener('click', () => {
+    persistCurrentWorld();
+    document.getElementById('saveNowBtn').textContent = 'Сохранено ✓';
+    setTimeout(() => { document.getElementById('saveNowBtn').textContent = 'Сохранить мир'; }, 1200);
+  });
+  document.getElementById('quitBtn').addEventListener('click', quitToMenu);
+  document.getElementById('rotateDismissBtn').addEventListener('click', () => {
+    rotatePromptDismissed = true;
+    updateRotatePrompt();
+  });
+
+  window.addEventListener('beforeunload', () => { persistCurrentWorld(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) persistCurrentWorld();
+  });
+  window.addEventListener('orientationchange', () => setTimeout(updateRotatePrompt, 250));
+}
+
+/* ---------------------------------------------------------------------
+   22. СТАРТ ПРИЛОЖЕНИЯ
+   --------------------------------------------------------------------- */
+function init() {
+  setupWebManifest();
+  bindUI();
+  setupDesktopMouse();
+  if (isTouchDevice) setupTouchControls();
+  refreshWorldsList();
+}
+
+init();
+</script>
+</body>
+</html>
